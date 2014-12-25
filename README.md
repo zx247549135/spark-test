@@ -29,4 +29,4 @@ Duration is 18.808 seconds
 Duration is 18.538 seconds
 Duration is 16.86 seconds
 Duration is 19.223 seconds
-Duration is 19.254 seconds
+Duration is 19.254 seconds 
