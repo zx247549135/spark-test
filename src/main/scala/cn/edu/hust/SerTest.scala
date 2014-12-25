@@ -34,22 +34,29 @@ object SerTest {
   }
 
   def testNative(input: RDD[Float], level: StorageLevel) {
+    println("-------- Native " + level.description + " --------")
+
     val cachedData = input.persist(level)
 
     var startTime = System.currentTimeMillis
     println("Max value is " + cachedData.max())
     var duration = System.currentTimeMillis - startTime
-    println("Duration is " + duration / 1000.0 + "seconds")
+    println("Duration is " + duration / 1000.0 + " seconds")
 
     for (i <- 1 to 5) {
       startTime = System.currentTimeMillis
       cachedData.max()
       duration = System.currentTimeMillis - startTime
-      println("Duration is " + duration / 1000.0 + "seconds")
+      println("Duration is " + duration / 1000.0 + " seconds")
     }
+
+    cachedData.unpersist()
+    println()
   }
 
   def testManuallyOptimized(input: RDD[Float]) {
+    println("------------------ Manually optimized ------------------")
+
     val cachedData = input.mapPartitions { iter =>
       val chunk = new FloatChunk(41960)
       val dos = new DataOutputStream(chunk)
@@ -60,14 +67,17 @@ object SerTest {
     var startTime = System.currentTimeMillis
     println("Max value is " + cachedData.map(_.max()).max())
     var duration = System.currentTimeMillis - startTime
-    println("Duration is " + duration / 1000.0 + "seconds")
+    println("Duration is " + duration / 1000.0 + " seconds")
 
     for (i <- 1 to 5) {
       startTime = System.currentTimeMillis
       cachedData.map(_.max()).max()
       duration = System.currentTimeMillis - startTime
-      println("Duration is " + duration / 1000.0 + "seconds")
+      println("Duration is " + duration / 1000.0 + " seconds")
     }
+
+    cachedData.unpersist()
+    println()
   }
 
   def main(args: Array[String]) {
@@ -77,11 +87,13 @@ object SerTest {
 
     Logger.getRootLogger.setLevel(Level.FATAL)
 
-    val slices = 2
+    val slices = 4
     val n = 4000000 * slices
     val rawData = spark.parallelize((1 to n).map(_.toFloat), slices)
 
     testManuallyOptimized(rawData)
+    testMemorySer(rawData)
+    testMemory(rawData)
 
     spark.stop()
   }
