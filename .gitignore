@@ -1,0 +1,11 @@
+*~
+*.swp
+*.ipr
+*.iml
+*.iws
+.idea/
+.settings
+.cache
+.project
+.classpath
+
