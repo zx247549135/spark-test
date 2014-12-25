@@ -51,7 +51,7 @@ object SerTest {
     }
   }
 
-  def testManullyOptimized(spark: SparkContext, n: Int, slices: Int) {
+  def testManuallyOptimized(spark: SparkContext, n: Int, slices: Int) {
     val cachedData = spark.parallelize(Seq((1 to n).map(_.toFloat)), slices).mapPartitions { iter =>
       val chunk = new FloatChunk(41960)
       val dos = new DataOutputStream(chunk)
@@ -83,7 +83,7 @@ object SerTest {
     val slices = 1
     val n = 4000000 * slices
 
-    testManullyOptimized(spark, n, slices)
+    testManuallyOptimized(spark, n, slices)
 
     spark.stop()
   }
