@@ -13,33 +13,31 @@ class FloatChunk(size: Int = 4196) extends ByteArrayOutputStream(size) {
     var maxValue = 0.0f
     var currentValue = 0.0f
     var offset = 0
-//    while (offset <= count) {
-////      currentValue = WritableComparator.readFloat(buf, offset)
-////      if (currentValue > maxValue) {
-////        maxValue = currentValue
-////      }
-//      offset += 4
-//    }
+    while (offset <= count) {
+      currentValue = WritableComparator.readFloat(buf, offset)
+      if (currentValue > maxValue) {
+        maxValue = currentValue
+      }
+      offset += 4
+    }
     maxValue
   }
 }
 
 object SerTest {
-  def testMemory(spark: SparkContext, n: Int, slices: Int) {
-    val data = spark.parallelize((1 to n).map(_.toFloat), slices)
-    testNative(data, StorageLevel.MEMORY_ONLY)
+  def testMemory(input: RDD[Float]) {
+    testNative(input, StorageLevel.MEMORY_ONLY)
   }
 
-  def testMemorySer(spark: SparkContext, n: Int, slices: Int) {
-    val data = spark.parallelize((1 to n).map(_.toFloat), slices)
-    testNative(data, StorageLevel.MEMORY_ONLY_SER)
+  def testMemorySer(input: RDD[Float]) {
+    testNative(input, StorageLevel.MEMORY_ONLY_SER)
   }
 
-  private def testNative(input: RDD[Float], level: StorageLevel) {
+  def testNative(input: RDD[Float], level: StorageLevel) {
     val cachedData = input.persist(level)
 
     var startTime = System.currentTimeMillis
-    val maxValue = cachedData.max()
+    println("Max value is " + cachedData.max())
     var duration = System.currentTimeMillis - startTime
     println("Duration is " + duration / 1000.0 + "seconds")
 
@@ -51,17 +49,16 @@ object SerTest {
     }
   }
 
-  def testManuallyOptimized(spark: SparkContext, n: Int, slices: Int) {
-    val cachedData = spark.parallelize(Seq((1 to n).map(_.toFloat)), slices).mapPartitions { iter =>
+  def testManuallyOptimized(input: RDD[Float]) {
+    val cachedData = input.mapPartitions { iter =>
       val chunk = new FloatChunk(41960)
       val dos = new DataOutputStream(chunk)
-      val data = iter.next()
-      data.foreach(dos.writeFloat(_))
+      iter.foreach(dos.writeFloat)
       Iterator(chunk)
     }.persist(StorageLevel.MEMORY_ONLY)
 
     var startTime = System.currentTimeMillis
-    cachedData.map(_.max()).max()
+    println("Max value is " + cachedData.map(_.max()).max())
     var duration = System.currentTimeMillis - startTime
     println("Duration is " + duration / 1000.0 + "seconds")
 
@@ -80,10 +77,11 @@ object SerTest {
 
     Logger.getRootLogger.setLevel(Level.FATAL)
 
-    val slices = 1
+    val slices = 2
     val n = 4000000 * slices
+    val rawData = spark.parallelize((1 to n).map(_.toFloat), slices)
 
-    testManuallyOptimized(spark, n, slices)
+    testManuallyOptimized(rawData)
 
     spark.stop()
   }
