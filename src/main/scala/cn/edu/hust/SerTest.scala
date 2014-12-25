@@ -41,7 +41,7 @@ object SerTest {
     var startTime = System.currentTimeMillis
     val maxValue = cachedData.max()
     var duration = System.currentTimeMillis - startTime
-    println(maxValue + "Duration is " + duration / 1000.0 + "seconds")
+    println("Duration is " + duration / 1000.0 + "seconds")
 
     for (i <- 1 to 5) {
       startTime = System.currentTimeMillis
