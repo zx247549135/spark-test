@@ -41,17 +41,17 @@ object SerTest {
 
     val cachedData = input.persist(level)
     
-    val maxF1 = (x: Float, y: FloatWrapper) => if (y.value > x) y.value else x
-    val maxF2 = (x: Float, y: Float) => if (y > x) y else x
+    val seqMax = (x: Float, y: FloatWrapper) => if (y.value > x) y.value else x
+    val combMax = (x: Float, y: Float) => if (y > x) y else x
 
     var startTime = System.currentTimeMillis
-    println("Max value is " + cachedData.aggregate(0.0f)(maxF1, maxF2))
+    println("Max value is " + cachedData.aggregate(0.0f)(seqMax, combMax))
     var duration = System.currentTimeMillis - startTime
     println("Duration is " + duration / 1000.0 + " seconds")
 
     for (i <- 1 to 5) {
       startTime = System.currentTimeMillis
-      cachedData.aggregate(0.0f)(maxF1, maxF2)
+      cachedData.aggregate(0.0f)(seqMax, combMax)
       duration = System.currentTimeMillis - startTime
       println("Duration is " + duration / 1000.0 + " seconds")
     }
