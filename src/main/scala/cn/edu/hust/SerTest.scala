@@ -1,7 +1,6 @@
 package cn.edu.hust
 
 import java.io.{DataOutputStream, ByteArrayOutputStream}
-import java.util.concurrent.TimeUnit
 
 import org.apache.hadoop.io.WritableComparator
 import org.apache.log4j._
