@@ -98,7 +98,7 @@ object PRTest {
     
     val startTime = System.currentTimeMillis
     for (i <- 1 to iters) {
-      val contribs = links.join(ranks).values.flatMap { case (urls, rank) =>
+      val contribs = links.join(ranks, links.partitioner.get).values.flatMap { case (urls, rank) =>
         val size = urls.size
         urls.map(url => (url, rank / size))
       }
@@ -156,9 +156,10 @@ object PRTest {
 
     val slices = 4
     val n: Long = 120000 * slices
+    val edgesPerVert = 40
     val edges = spark.parallelize(0L until n, slices).flatMap ( x => {
-      val result = new Array[(Long, Long)](20)
-      for (i <- 0 until 20) {
+      val result = new Array[(Long, Long)](edgesPerVert)
+      for (i <- 0 until edgesPerVert) {
         result(i) = (x, (x + slices.toLong + i.toLong) % n)
       }
       result
