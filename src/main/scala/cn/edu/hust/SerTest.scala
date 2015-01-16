@@ -13,7 +13,7 @@ class FloatChunk(size: Int = 4196) extends ByteArrayOutputStream(size) {
     var maxValue = 0.0f
     var currentValue = 0.0f
     var offset = 0
-    while (offset <= count) {
+    while (offset < count) {
       currentValue = WritableComparator.readFloat(buf, offset)
       if (currentValue > maxValue) {
         maxValue = currentValue
