@@ -48,10 +48,10 @@ class EdgeChunk(size: Int = 4196) extends ByteArrayOutputStream(size) { self =>
   
   def getMessageIterator(vertices: Iterator[(Long, Double)]) = new Iterator[(Long, Double)] {
     var changeVertex = true
-    var currentVertex: (Long, Double) = _
     var offset = 0
     var currentDestIndex = 0
     var currentDestNum = 0
+    var currentContrib = 0.0
 
     override def hasNext = !changeVertex || vertices.hasNext
 
@@ -59,7 +59,7 @@ class EdgeChunk(size: Int = 4196) extends ByteArrayOutputStream(size) { self =>
       if (!hasNext) Iterator.empty.next()
       else {
         if (changeVertex) {
-          currentVertex = vertices.next()
+          val currentVertex = vertices.next()
           while (currentVertex._1 != WritableComparator.readLong(buf, offset)) {
             offset += 8
             val numDests = WritableComparator.readInt(buf, offset)
@@ -69,6 +69,7 @@ class EdgeChunk(size: Int = 4196) extends ByteArrayOutputStream(size) { self =>
           currentDestNum = WritableComparator.readInt(buf, offset)
           offset += 4
           currentDestIndex = 0
+          currentContrib = currentVertex._2 / currentDestNum
           changeVertex = false
         }
 
@@ -78,7 +79,7 @@ class EdgeChunk(size: Int = 4196) extends ByteArrayOutputStream(size) { self =>
         val destId = WritableComparator.readLong(buf, offset)
         offset += 8
         
-        (destId, currentVertex._2)
+        (destId, currentContrib)
       }
     }
     
