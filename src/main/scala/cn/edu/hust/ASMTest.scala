@@ -2,6 +2,7 @@ package cn.edu.hust
 
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.executor.TaskMetrics
+import org.apache.spark.rdd.RDD
 import org.apache.spark.util.TaskCompletionListener
 import org.apache.spark.{SparkConf, SparkContext, TaskContext}
 import org.objectweb.asm.Opcodes._
@@ -97,21 +98,26 @@ object Generator {
 object ASMTest {
   def main(args: Array[String]) {
     val rewriter = ClassRewriter()
-    rewriter.rewriteRDDIterator()
-    rewriter.runAfterRewrite {
-      val conf = new SparkConf().setAppName("Spark ASM Test").setMaster("local")
-      val spark = new SparkContext(conf)
-      spark.stop()
+    rewriter.rewriteRDD()
+    rewriter.rewriteSparkContextConstructor()
 
-      Logger.getRootLogger.setLevel(Level.FATAL)
+    //val conf = new SparkConf().setAppName("Spark ASM Test").setMaster("local")
+    val spark = new SparkContext
+    //spark.stop()
 
-      val slices = 4
-      val n = 60 * slices
-      val rawData = spark.parallelize(1 to n, slices).cache()
+    //Logger.getRootLogger.setLevel(Level.FATAL)
 
-      println(rawData.iterator(rawData.partitions(0), new FakeTaskContext).next())
+    val slices = 4
+    val n = 60 * slices
+    val rawData = spark.parallelize(1 to n, slices)
+
+    def reduce[T](rdd: RDD[T])(reducer: (T, T) => T): T = {
+      rdd.partitions.map {
+        rdd.iterator(_, new FakeTaskContext).reduce(reducer)
+      }.reduce(reducer)
     }
 
+    println(reduce(rawData)(_ + _))
   }
 }
 

@@ -2,44 +2,35 @@ package cn.edu.hust
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, InputStream, OutputStream}
 
+import org.objectweb.asm.Opcodes._
 import org.objectweb.asm._
 
-class MemoryClassLoader extends ClassLoader {
-  val cache = new collection.mutable.HashMap[String, Class[_]]
+class MemoryClassLoader(_parent: ClassLoader) extends ClassLoader(_parent) {
 
-  def addClass(className: String, opCodes: Array[Byte]) = {
-    try {
-      if (!cache.contains(className))
-        cache(className) = defineClass(className, opCodes, 0, opCodes.length)
-      cache(className)
-    } catch {
-      case e: SecurityException => null
-    }
+  def this() {
+    this(ClassLoader.getSystemClassLoader())
   }
 
-  @throws(classOf[ClassNotFoundException])
-  override def loadClass(name: String, resolve: Boolean): Class[_] = {
-    getClassLoadingLock(name).synchronized {
-      var c: Class[_] = findLoadedClass(name)
-      if (c == null) {
-        c = cache.getOrElse(name, null)
-        if (c == null && (name.startsWith("org.apache.spark") || name.startsWith("cn.edu.hust"))) {
-          val classPath = name.replace(".", "/") + ".class"
-          val resourceStream = getResourceAsStream(classPath)
-          if (resourceStream != null) {
-            val baos = new ByteArrayOutputStream(128)
-            ClassRewriter.copyStream(resourceStream, baos, true)
-            c = addClass(name, baos.toByteArray)
-          }
-        }
-        if (c == null)
-          c = super.loadClass(name, resolve)
-      }
-      if (resolve) {
-        resolveClass(c)
-      }
-      return c
-    }
+  private val cache = new collection.mutable.HashMap[String, Class[_]]
+
+  private def parentDefineClass(name: String, b: Array[Byte], off: Int, len: Int) = {
+    val cls = classOf[ClassLoader]
+    val method = cls.getDeclaredMethod("defineClass", classOf[String], classOf[Array[Byte]], classOf[Int], classOf[Int])
+    method.setAccessible(true)
+    method.invoke(getParent, name, b, new Integer(off), new Integer(len)).asInstanceOf[Class[_]]
+  }
+
+  private def parentResolveClass(c: Class[_]) {
+    val cls = classOf[ClassLoader]
+    val method = cls.getDeclaredMethod("resolveClass", classOf[Class[_]])
+    method.setAccessible(true)
+    method.invoke(getParent, c).asInstanceOf[Unit]
+  }
+
+  def addClass(className: String, opCodes: Array[Byte], resolve: Boolean = false) = {
+    val c = parentDefineClass(className, opCodes, 0, opCodes.length)
+    if (resolve) parentResolveClass(c)
+    c
   }
 }
 
@@ -49,9 +40,8 @@ case class MethodInfo(acc: Int,
                       signature: String,
                       exceptions: Array[String])
 
-class FilterdMethodRewriter(_cv: ClassVisitor,
-                            predicate: MethodInfo => Boolean,
-                            adapterBuilder: MethodVisitor => MethodAdapter)
+class FilterdMethodsRewriter(_cv: ClassVisitor,
+                             rules: Seq[(MethodInfo => Boolean, MethodVisitor => MethodAdapter)])
   extends ClassAdapter(_cv) {
 
   override def visitMethod(acc: Int,
@@ -61,39 +51,13 @@ class FilterdMethodRewriter(_cv: ClassVisitor,
                            exceptions: Array[String]): MethodVisitor = {
     var mv = cv.visitMethod(acc, name, desc, signature, exceptions)
     val info = MethodInfo(acc, name, desc, signature, exceptions)
-    if (predicate(info))
-      mv = adapterBuilder(mv)
+    val ruleOpt = rules.find(_._1(info))
+    ruleOpt.foreach(rule => mv = rule._2(mv))
     mv
   }
 }
 
-class ClassRewriter {
-
-  val loader = new MemoryClassLoader
-
-  Thread.currentThread().setContextClassLoader(loader)
-
-  def loadClass(cls: Class[_]): Class[_] = loadClass(cls.getName)
-
-  def loadClass(className: String): Class[_] = {
-    val classPath = className.replace(".", "/") + ".class"
-    val classStream = loader.getResourceAsStream(classPath)
-    val baos = new ByteArrayOutputStream(128)
-    ClassRewriter.copyStream(classStream, baos, true)
-    val result = loader.addClass(className, baos.toByteArray)
-
-    Seq("$$anon$1", "$$anonfun$main$1").foreach(postfix => {
-      val classPath = className.replace(".", "/") + postfix + ".class"
-      val classStream = loader.getResourceAsStream(classPath)
-      if (classStream != null) {
-        val baos = new ByteArrayOutputStream(128)
-        ClassRewriter.copyStream(classStream, baos, true)
-        loader.addClass(className + postfix, baos.toByteArray)
-      }
-    })
-
-    result
-  }
+class ClassRewriter private(private val loader: MemoryClassLoader) {
 
   private def getClassReader(cls: Class[_]): ClassReader = getClassReader(cls.getName)
 
@@ -110,25 +74,60 @@ class ClassRewriter {
     new ClassReader(new ByteArrayInputStream(baos.toByteArray))
   }
 
-  def runAfterRewrite(body: => Unit) {
-    val box = () => body
-    val bodyClass = loadClass(box.getClass)
-    val bodyInstance = bodyClass.newInstance()
-    val applyMethod = bodyClass.getMethod("apply")
-    applyMethod.invoke(bodyInstance)
+  def rewriteRDD() {
+    val rules = Seq(
+      ("<init>", new MethodAdapter(_: MethodVisitor) {
+        override def visitMethodInsn(opcode: Int, owner: String, name: String, desc: String) {
+          if (name == "newRddId") {
+            super.visitInsn(POP)
+            super.visitLdcInsn(0)
+          }
+          else if (name == "getCallSite") {
+            super.visitInsn(POP)
+            super.visitInsn(ACONST_NULL)
+          }
+          else {
+            super.visitMethodInsn(opcode, owner, name, desc)
+          }
+        }
+      }),
+      ("iterator", new MethodAdapter(_: MethodVisitor) {
+        override def visitCode() {
+          super.visitVarInsn(ALOAD, 0)
+          super.visitVarInsn(ALOAD, 1)
+          super.visitVarInsn(ALOAD, 2)
+          super.visitMethodInsn(INVOKEVIRTUAL,
+            "org/apache/spark/rdd/RDD",
+            "compute",
+            "(Lorg/apache/spark/Partition;Lorg/apache/spark/TaskContext;)Lscala/collection/Iterator;")
+          super.visitInsn(Opcodes.ARETURN)
+        }
+      }))
+    rewriteMethodsByName("org.apache.spark.rdd.RDD", rules)
+  }
+
+  def rewriteRDDId() {
+    rewriteMethodByName("org.apache.spark.rdd.RDD", "<init>", new MethodAdapter(_) {
+      override def visitMethodInsn(opcode: Int, owner: String, name: String, desc: String) {
+        if (name == "newRddId")
+          super.visitLdcInsn(0)
+        else
+          super.visitMethodInsn(opcode, owner, name, desc)
+      }
+    })
   }
 
   def rewriteRDDIterator() {
     rewriteMethodByName("org.apache.spark.rdd.RDD", "iterator", new MethodAdapter(_) {
       override def visitCode() {
-        super.visitVarInsn(Opcodes.ALOAD, 0)
-        super.visitVarInsn(Opcodes.ALOAD, 1)
+        super.visitVarInsn(ALOAD, 0)
+        super.visitVarInsn(ALOAD, 1)
         super.visitVarInsn(Opcodes.ALOAD, 2)
-        super.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+        super.visitMethodInsn(INVOKEVIRTUAL,
           "org/apache/spark/rdd/RDD",
           "compute",
           "(Lorg/apache/spark/Partition;Lorg/apache/spark/TaskContext;)Lscala/collection/Iterator;")
-        mv.visitInsn(Opcodes.ARETURN)
+        super.visitInsn(Opcodes.ARETURN)
       }
     })
   }
@@ -149,10 +148,10 @@ class ClassRewriter {
           newName = "origin$" + name
           val mv = cv.visitMethod(acc, name, desc, signature, exceptions)
           mv.visitCode()
-          mv.visitVarInsn(Opcodes.ALOAD, 0)
-          mv.visitVarInsn(Opcodes.ALOAD, 1)
-          mv.visitVarInsn(Opcodes.ALOAD, 2)
-          mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL,
+          mv.visitVarInsn(ALOAD, 0)
+          mv.visitVarInsn(ALOAD, 1)
+          mv.visitVarInsn(ALOAD, 2)
+          mv.visitMethodInsn(INVOKEVIRTUAL,
             "org/apache/spark/rdd/RDD",
             "compute",
             "(Lorg/apache/spark/Partition;Lorg/apache/spark/TaskContext;)Lscala/collection/Iterator;")
@@ -169,7 +168,17 @@ class ClassRewriter {
     loader.addClass(className, codes)
   }
 
-  def printRDDCompute(): Unit = {
+  def rewriteSparkContextConstructor() {
+    rewriteMethod("org.apache.spark.SparkContext", info => info.name == "<init>" && info.desc == "()V", new MethodAdapter(_) {
+      override def visitCode() {
+        super.visitVarInsn(ALOAD, 0)
+        super.visitMethodInsn(INVOKESPECIAL, "java/lang/Object", "<init>", "()V")
+        super.visitInsn(RETURN)
+      }
+    })
+  }
+
+  def printRDDCompute() {
     val cr = getClassReader("org.apache.spark.rdd.RDD")
     val cw = new ClassWriter(cr,
       ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES)
@@ -201,23 +210,41 @@ class ClassRewriter {
     })
   }
 
-  def rewriteMethodByName(className: String,
-                          methodName: String,
-                          adapterBuilder: MethodVisitor => MethodAdapter) {
+  def rewriteMethod(className: String,
+                    predicate: MethodInfo => Boolean,
+                    adapterBuilder: MethodVisitor => MethodAdapter) {
+    rewriteMethods(className, Seq((predicate, adapterBuilder)))
+  }
+
+  def rewriteMethods(className: String,
+                     rules: Seq[(MethodInfo => Boolean, MethodVisitor => MethodAdapter)]) {
     val cr = getClassReader(className)
     val cw = new ClassWriter(cr,
       ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES)
-    val cv = new FilterdMethodRewriter(cw, _.name == methodName, adapterBuilder)
+    val cv = new FilterdMethodsRewriter(cw, rules)
     cr.accept(cv, 0)
     val codes = cw.toByteArray
     loader.addClass(className, codes)
+  }
+
+  def rewriteMethodByName(className: String,
+                          methodName: String,
+                          adapterBuilder: MethodVisitor => MethodAdapter) {
+    rewriteMethod(className, _.name == methodName, adapterBuilder)
+  }
+
+  def rewriteMethodsByName(className: String,
+                           rules: Seq[(String, MethodVisitor => MethodAdapter)]) {
+    rewriteMethods(className, rules.map(rule => ((info: MethodInfo) => info.name == rule._1, rule._2)))
   }
 
 }
 
 object ClassRewriter {
 
-  def apply() = new ClassRewriter
+  def apply() = new ClassRewriter(new MemoryClassLoader)
+
+  def apply(parentLoader: ClassLoader) = new ClassRewriter(new MemoryClassLoader(parentLoader))
 
   def copyStream(in: InputStream,
                  out: OutputStream,
