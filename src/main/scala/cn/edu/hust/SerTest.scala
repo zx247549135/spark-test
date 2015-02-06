@@ -90,15 +90,15 @@ object SerTest {
     val conf = new SparkConf().setAppName("Spark Ser Cache Test").setMaster("local")
     val spark = new SparkContext(conf)
 
-    Logger.getRootLogger.setLevel(Level.FATAL)
+    //Logger.getRootLogger.setLevel(Level.FATAL)
 
     val slices = 4
     val n = 6000000 * slices
     val rawData = spark.parallelize(1 to n, slices).map(x => new FloatWrapper(x.toFloat))
 
     //testManuallyOptimized(rawData)
-    testMemorySer(rawData)
-    //testMemory(rawData)
+    //testMemorySer(rawData)
+    testMemory(rawData)
 
     spark.stop()
   }
