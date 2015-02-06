@@ -165,6 +165,19 @@
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-core_${scala.binary.version}</artifactId>
       <version>${spark.version}</version>
+      <exclusions>
+        <exclusion>
+          <artifactId>asm</artifactId>
+          <groupId>asm</groupId>
+         </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.sable</groupId>
+      <artifactId>soot</artifactId>
+      <version>2.6.0</version>
+      <scope>system</scope>
+      <systemPath>${project.basedir}/libs/soot-trunk.jar</systemPath>
     </dependency>
   </dependencies>
 
