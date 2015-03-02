@@ -1,7 +1,6 @@
 package cn.edu.hust
 
-import soot.jimple.InvokeExpr
-import soot.jimple.internal.{JimpleLocal, AbstractVirtualInvokeExpr, InvokeExprBox}
+import soot.jimple.internal.{AbstractVirtualInvokeExpr, JimpleLocal}
 import soot.options.Options
 import soot.{Scene, SootClass}
 
