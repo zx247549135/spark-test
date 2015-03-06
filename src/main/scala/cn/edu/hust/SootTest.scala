@@ -10,7 +10,7 @@ object SootTest {
 
   def main(args: Array[String]){
     
-    def sootInit() {
+    def sootInit() {      
       Options.v.set_soot_classpath(System.getProperty("java.class.path"))
       Options.v.set_coffi(false)
       Options.v.set_src_prec(Options.src_prec_only_class)

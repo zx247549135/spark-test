@@ -3,10 +3,13 @@ package dk.brics.soot.intermediate.main;
 import java.io.IOException;
 
 import dk.brics.soot.intermediate.foonalasys.*;
+import soot.options.Options;
 
 public class Main { 
 	
 	public static void main(String[] args) throws IOException {
+        Options.v().set_soot_classpath(System.getProperty("java.class.path"));
+        
 		String program_name = null;
 		long time0 = System.currentTimeMillis();
 		
