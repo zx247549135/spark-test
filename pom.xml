@@ -28,8 +28,8 @@
   <properties>
     <java.version>1.6</java.version>
     <scala.tools.version>2.10</scala.tools.version>
-    <scala.version>2.10.4</scala.version>
-    <spark.version>1.2.0</spark.version>
+    <scala.version>2.10.5</scala.version>
+    <spark.version>1.3.0</spark.version>
     <scala.binary.version>2.10</scala.binary.version>
   </properties>
 
