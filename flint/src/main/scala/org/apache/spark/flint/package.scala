@@ -5,7 +5,7 @@ import org.apache.spark.rdd.RDD
 import scala.reflect.ClassTag
 
 /**
- * Created by Administrator on 2015/5/7.
+ * implicits for rdd to flint
  */
 package object flint {
 
