@@ -17,12 +17,12 @@ private[spark] class FlintRDDPartition(val idx: Int) extends Partition {
 
 private[spark] class FlintRDD[T: ClassTag](
     @transient sc: SparkContext,
-    @transient deps: Seq[ShuffleDependency[_, _, _]],
+    @transient deps: Seq[FlintDependency[_, _, _]],
     numPartitions: Int)
   extends RDD[T](sc, deps) {
 
   @DeveloperApi
-  override def compute(split: Partition, context: TaskContext): Iterator[T] = throw new Exception
+  override def compute(split: Partition, context: TaskContext): Iterator[T] = throw new UnsupportedOperationException
 
   override def getPartitions: Array[Partition] = {
     Array.tabulate[Partition](numPartitions)(i => new FlintRDDPartition(i))
