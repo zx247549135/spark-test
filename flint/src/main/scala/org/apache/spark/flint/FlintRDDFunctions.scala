@@ -11,7 +11,13 @@ import scala.reflect.ClassTag
 class FlintRDDFunctions[T: ClassTag](self: RDD[T]) extends Logging with Serializable {
 
   def withFlint(): RDD[T] = {
-    new FlintRDD(self.context, Nil, self.partitions.size)
+    self.sparkContext.asInstanceOf[FlintContext].registerStartId(self.id)
+    self
+  }
+
+  def withoutFlint(): RDD[T] = {
+    self.sparkContext.asInstanceOf[FlintContext].registerEndId(self.id)
+    self
   }
 
 }
