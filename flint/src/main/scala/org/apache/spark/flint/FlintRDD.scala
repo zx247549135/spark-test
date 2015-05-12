@@ -17,10 +17,10 @@ private[spark] class FlintRDDPartition(val idx: Int) extends Partition {
 
 private[spark] class FlintRDD[T: ClassTag, U](
     @transient sc: SparkContext,
-    @transient deps: Seq[ShuffleDependency[_, _, _]],
+    @transient deps: Seq[Dependency[_]],
     @transient origin: RDD[T],
     numPartitions: Int,
-    generatedLoopFunc:  (Partition, TaskContext) => U,
+    generatedLoopFunc:  Option[(Partition, TaskContext) => U] = None,
     generatedIterator: Option[(Partition, TaskContext) => Iterator[T]] = None)
   extends RDD[T](sc, deps) {
 
@@ -37,7 +37,14 @@ private[spark] class FlintRDD[T: ClassTag, U](
     Array.tabulate[Partition](numPartitions)(i => new FlintRDDPartition(i))
   }
 
+  @DeveloperApi
   def execute(split: Partition, context: TaskContext): U = {
-    generatedLoopFunc(split, context)
+    if (generatedLoopFunc.isDefined) {
+      generatedLoopFunc.get(split, context)
+    } else {
+      throw new UnsupportedOperationException
+    }
   }
+
+  val useFlintTask: Boolean = generatedLoopFunc.isDefined
 }
