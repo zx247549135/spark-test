@@ -16,9 +16,19 @@ class FlintContext(conf: SparkConf) extends SparkContext(conf) {
 
   def this() = this(new SparkConf())
 
-  def registerStartId(id: Int) = startIds.add(id)
+  private[flint] def registerStartId(id: Int) {
+    if (endIds.contains(id))
+      endIds.remove(id)
+    else
+      startIds.add(id)
+  }
 
-  def registerEndId(id: Int) = endIds.add(id)
+  private[flint] def registerEndId(id: Int) {
+    if (startIds.contains(id))
+      startIds.remove(id)
+
+    endIds.add(id)
+  }
 
   override def runJob[T, U: ClassTag](
       rdd: RDD[T],
@@ -26,6 +36,8 @@ class FlintContext(conf: SparkConf) extends SparkContext(conf) {
       partitions: Seq[Int],
       allowLocal: Boolean,
       resultHandler: (Int, U) => Unit) {
+
+
     super.runJob(rdd, func, partitions, allowLocal, resultHandler)
   }
 
