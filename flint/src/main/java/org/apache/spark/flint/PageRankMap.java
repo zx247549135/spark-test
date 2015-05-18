@@ -519,7 +519,7 @@ public final class PageRankMap {
 
     public SpillInfo[] closeAndGetSpills() throws IOException {
         try {
-            if (sorter != null) {
+            if (longArray != null) {
                 // Do not count the final file towards the spill count.
                 writeSortedFile(true);
                 free();
