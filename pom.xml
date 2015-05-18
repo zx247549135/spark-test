@@ -219,6 +219,7 @@
               <sources>
                 <source>intermediate_representation/src/main/java</source>
                 <source>flint/src/main/scala</source>
+                <source>flint/src/main/java</source>
               </sources>
             </configuration>
           </execution>
