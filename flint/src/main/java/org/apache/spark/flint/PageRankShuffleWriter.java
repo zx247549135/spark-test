@@ -41,10 +41,8 @@ import org.apache.spark.unsafe.PlatformDependent;
  */
 public class PageRankShuffleWriter {
 
-    private final BlockManager blockManager;
     private final IndexShuffleBlockManager shuffleBlockManager;
-    private final TaskMemoryManager memoryManager;
-    private final ShuffleMemoryManager shuffleMemoryManager;
+    private final BlockManager blockManager;
     //private final SerializerInstance serializer;
 
     //private final ShuffleWriteMetrics writeMetrics;
@@ -52,7 +50,7 @@ public class PageRankShuffleWriter {
     private final int mapId;
     private final int numPart;
     private final TaskContext taskContext;
-    //private final SparkConf sparkConf;
+    private final SparkConf sparkConf;
     //private final boolean transferToEnabled;
 
     private boolean stopping = false;
@@ -62,17 +60,18 @@ public class PageRankShuffleWriter {
     private final Object kvBaseObj = kvBuffer.getBaseObject();
     private final long kvBaseOffset = kvBuffer.getBaseOffset();
 
-    public PageRankShuffleWriter(int shuffleId, int mapId, int numParts, TaskContext taskContext) {
+    public PageRankShuffleWriter(int shuffleId, int mapId, int numParts, TaskContext taskContext) throws IOException {
         this.shuffleId = shuffleId;
         this.mapId = mapId;
         this.numPart = numParts;
-        this.taskContext = taskContext;
 
-        this.blockManager = SparkEnv.get().blockManager();
+        SparkEnv env = SparkEnv.get();
+        this.taskContext = taskContext;
+        this.sparkConf = env.conf();
+
+        this.blockManager = env.blockManager();
         this.shuffleBlockManager =  (IndexShuffleBlockManager) SparkEnv.get().shuffleManager().shuffleBlockManager();
-        this.memoryManager = new TaskMemoryManager(new ExecutorMemoryManager(MemoryAllocator.HEAP));
-        this.shuffleMemoryManager = SparkEnv.get().shuffleMemoryManager();
-        this.map = new PageRankMap(memoryManager, numPart, 1024);
+        this.map = new PageRankMap(numPart, 1024, taskContext);
     }
 
     public void write(long key, double value) {

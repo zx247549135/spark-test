@@ -1,12 +1,25 @@
 package org.apache.spark.flint;
 
+import java.io.File;
 import java.io.IOException;
 import java.lang.Override;
 import java.lang.UnsupportedOperationException;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 
+import com.google.common.annotations.VisibleForTesting;
+import org.apache.spark.SparkConf;
+import org.apache.spark.SparkEnv;
+import org.apache.spark.TaskContext;
+import org.apache.spark.executor.ShuffleWriteMetrics;
+import org.apache.spark.serializer.SerializerInstance;
+import org.apache.spark.shuffle.IndexShuffleBlockManager;
+import org.apache.spark.shuffle.ShuffleMemoryManager;
+import org.apache.spark.storage.BlockManager;
+import org.apache.spark.storage.BlockObjectWriter;
+import org.apache.spark.storage.TempShuffleBlockId;
 import org.apache.spark.util.Utils;
 import org.apache.spark.unsafe.*;
 import org.apache.spark.unsafe.array.ByteArrayMethods;
@@ -15,6 +28,10 @@ import org.apache.spark.unsafe.bitset.BitSet;
 import org.apache.spark.unsafe.hash.Murmur3_x86_32;
 import org.apache.spark.unsafe.map.HashMapGrowthStrategy;
 import org.apache.spark.unsafe.memory.*;
+import org.apache.spark.util.collection.Sorter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import scala.Tuple2;
 
 /**
  * An append-only hash map where keys and values are contiguous regions of bytes.
@@ -30,12 +47,18 @@ import org.apache.spark.unsafe.memory.*;
  */
 public final class PageRankMap {
 
+    private final Logger logger = LoggerFactory.getLogger(PageRankMap.class);
+
     private static final Murmur3_x86_32 HASHER = new Murmur3_x86_32(0);
 
     private static final HashMapGrowthStrategy growthStrategy = HashMapGrowthStrategy.DOUBLING;
 
+    private final BlockManager blockManager;
+    private final IndexShuffleBlockManager shuffleBlockManager;
     private final TaskMemoryManager memoryManager;
+    private final ShuffleMemoryManager shuffleMemoryManager;
 
+    private final ShuffleWriteMetrics writeMetrics;
 
     /**
      * A linked list for tracking all allocated data pages so that we can free all of our memory.
@@ -91,7 +114,9 @@ public final class PageRankMap {
 
     private final double loadFactor;
 
-    private final int numParts;
+    private final int numPartitions;
+
+    private final int initialSize;
 
 
     /**
@@ -127,29 +152,44 @@ public final class PageRankMap {
     private long numHashCollisions = 0;
 
     public PageRankMap(
-            TaskMemoryManager memoryManager,
             int numParts,
             int initialCapacity,
             double loadFactor,
-            boolean enablePerfMetrics) {
-        this.memoryManager = memoryManager;
-        this.numParts = numParts;
+            boolean enablePerfMetrics,
+            TaskContext taskContext) throws IOException {
+        this.taskContext = taskContext;
+
+        this.numPartitions = numParts;
         this.loadFactor = loadFactor;
         this.loc = new Location();
         this.enablePerfMetrics = enablePerfMetrics;
-        allocate(initialCapacity);
+        this.initialSize = initialCapacity;
+
+        SparkEnv env = SparkEnv.get();
+        this.blockManager = env.blockManager();
+        this.shuffleBlockManager =  (IndexShuffleBlockManager) SparkEnv.get().shuffleManager().shuffleBlockManager();
+        this.memoryManager = new TaskMemoryManager(new ExecutorMemoryManager(MemoryAllocator.HEAP));
+        this.shuffleMemoryManager = env.shuffleMemoryManager();
+
+        this.writeMetrics = new ShuffleWriteMetrics();
+
+        // for sort and spill
+
+        this.fileBufferSizeBytes = env.conf().getInt("spark.shuffle.file.buffer", 32) * 1024;
+
+        initializeForWriting();
     }
 
-    public PageRankMap(TaskMemoryManager memoryManager, int numParts, int initialCapacity) {
-        this(memoryManager, numParts, initialCapacity, 0.70, false);
+    public PageRankMap(int numParts, int initialCapacity, TaskContext taskContext) throws IOException {
+        this(numParts, initialCapacity, 0.70, false, taskContext);
     }
 
     public PageRankMap(
-            TaskMemoryManager memoryManager,
             int numParts,
             int initialCapacity,
-            boolean enablePerfMetrics) {
-        this(memoryManager, numParts, initialCapacity, 0.70, enablePerfMetrics);
+            boolean enablePerfMetrics,
+            TaskContext taskContext) throws IOException {
+        this(numParts, initialCapacity, 0.70, enablePerfMetrics, taskContext);
     }
 
     /**
@@ -370,7 +410,7 @@ public final class PageRankMap {
                     currentDataPage, keyDataOffsetInPage);
             longArray.set(pos * 2, storedKeyAddress);
             longArray.setLowHalf(pos * 2 + 1, keyHashcode);
-            longArray.setHighHalf(pos * 2 + 1, Utils.nonNegativeMod(keyHashcode, numParts));
+            longArray.setHighHalf(pos * 2 + 1, Utils.nonNegativeMod(keyHashcode, numPartitions));
             updateAddressesAndSizes(storedKeyAddress);
             isDefined = true;
             if (size > growthThreshold) {
@@ -417,10 +457,40 @@ public final class PageRankMap {
         }
         Iterator<MemoryBlock> dataPagesIterator = dataPages.iterator();
         while (dataPagesIterator.hasNext()) {
-            memoryManager.freePage(dataPagesIterator.next());
+            MemoryBlock block = dataPagesIterator.next();
+            memoryManager.freePage(block);
             dataPagesIterator.remove();
         }
         assert(dataPages.isEmpty());
+    }
+
+    private void freeMeta() {
+        if (longArray != null) {
+            memoryManager.free(longArray.memoryBlock());
+            longArray = null;
+        }
+        if (bitset != null) {
+            // The bitset's heap memory isn't managed by a memory manager, so no need to free it here.
+            bitset = null;
+        }
+        size = 0;
+    }
+
+    private long freePages() {
+        long memoryFreed = 0l;
+        Iterator<MemoryBlock> dataPagesIterator = dataPages.iterator();
+        while (dataPagesIterator.hasNext()) {
+            MemoryBlock block = dataPagesIterator.next();
+            memoryFreed += block.size();
+            memoryManager.freePage(block);
+            shuffleMemoryManager.release(block.size());
+            dataPagesIterator.remove();
+        }
+
+        dataPages.clear();
+        currentDataPage = null;
+        pageCursor = 0;
+        return memoryFreed;
     }
 
     /** Returns the total amount of memory, in bytes, consumed by this map's managed structures. */
@@ -428,6 +498,11 @@ public final class PageRankMap {
         return (
                 dataPages.size() * PAGE_SIZE_BYTES +
                         bitset.memoryBlock().size() +
+                        longArray.memoryBlock().size());
+    }
+
+    public long getMetaMemoryConsumption() {
+        return (bitset.memoryBlock().size() +
                         longArray.memoryBlock().size());
     }
 
@@ -515,19 +590,212 @@ public final class PageRankMap {
 
 
 
+   // for sort
 
+    private Sorter<PageRankPointer, LongArray> sorter;
+    private static final class SortComparator implements Comparator<PageRankPointer> {
+        @Override
+        public int compare(PageRankPointer left, PageRankPointer right) {
+            return left.partitionId - right.partitionId;
+        }
+    }
+    private static final SortComparator SORT_COMPARATOR = new SortComparator();
+
+    private void initializeForWriting() throws IOException {
+        // TODO: move this sizing calculation logic into a static method of sorter:
+        final long memoryRequested = initialSize * 8L * 2 + initialSize / 8L;
+        final long memoryAcquired = shuffleMemoryManager.tryToAcquire(memoryRequested);
+        if (memoryAcquired != memoryRequested) {
+            shuffleMemoryManager.release(memoryAcquired);
+            throw new IOException("Could not acquire " + memoryRequested + " bytes of memory");
+        }
+        allocate(initialSize);
+
+        this.sorter = new Sorter<PageRankPointer, LongArray>(PageRankSortDataFormat.INSTANCE);
+    }
+
+
+
+
+    // for spill
+
+    @VisibleForTesting
+    static final int DISK_WRITE_BUFFER_SIZE = 1024 * 1024;
+
+    /** The buffer size to use when writing spills using DiskBlockObjectWriter */
+    private final int fileBufferSizeBytes;
+
+    private final TaskContext taskContext;
+
+    private final LinkedList<SpillInfo> spills = new LinkedList<SpillInfo>();
 
     public SpillInfo[] closeAndGetSpills() throws IOException {
         try {
             if (longArray != null) {
                 // Do not count the final file towards the spill count.
                 writeSortedFile(true);
-                free();
+                freePages();
             }
             return spills.toArray(new SpillInfo[spills.size()]);
         } catch (IOException e) {
             cleanupAfterError();
             throw e;
+        }
+    }
+
+    /**
+     * Sorts the in-memory records and writes the sorted records to an on-disk file.
+     * This method does not free the sort data structures.
+     *
+     * @param isLastFile if true, this indicates that we're writing the final output file and that the
+     *                   bytes written should be counted towards shuffle spill metrics rather than
+     *                   shuffle write metrics.
+     */
+    private void writeSortedFile(boolean isLastFile) throws IOException {
+
+        final ShuffleWriteMetrics writeMetricsToUse;
+
+        if (isLastFile) {
+            // We're writing the final non-spill file, so we _do_ want to count this as shuffle bytes.
+            writeMetricsToUse = writeMetrics;
+        } else {
+            // We're spilling, so bytes written should be counted towards spill rather than write.
+            // Create a dummy WriteMetrics object to absorb these metrics, since we don't want to count
+            // them towards shuffle bytes written.
+            writeMetricsToUse = new ShuffleWriteMetrics();
+        }
+
+        // This call performs the actual sort.
+        sorter.sort(longArray, 0, size, SORT_COMPARATOR);
+
+        // Currently, we need to open a new DiskBlockObjectWriter for each partition; we can avoid this
+        // after SPARK-5581 is fixed.
+        BlockObjectWriter writer;
+
+        // Small writes to DiskBlockObjectWriter will be fairly inefficient. Since there doesn't seem to
+        // be an API to directly transfer bytes from managed memory to the disk writer, we buffer
+        // data through a byte array. This array does not need to be large enough to hold a single
+        // record;
+        final byte[] writeBuffer = new byte[DISK_WRITE_BUFFER_SIZE];
+
+        // Because this output will be read during shuffle, its compression codec must be controlled by
+        // spark.shuffle.compress instead of spark.shuffle.spill.compress, so we need to use
+        // createTempShuffleBlock here; see SPARK-3426 for more details.
+        final Tuple2<TempShuffleBlockId, File> spilledFileInfo =
+                blockManager.diskBlockManager().createTempShuffleBlock();
+        final File file = spilledFileInfo._2();
+        final TempShuffleBlockId blockId = spilledFileInfo._1();
+        final SpillInfo spillInfo = new SpillInfo(numPartitions, file, blockId);
+
+        // Unfortunately, we need a serializer instance in order to construct a DiskBlockObjectWriter.
+        // Our write path doesn't actually use this serializer (since we end up calling the `write()`
+        // OutputStream methods), but DiskBlockObjectWriter still calls some methods on it. To work
+        // around this, we pass a dummy no-op serializer.
+        final DummySerializer ser = new DummySerializer();
+
+        writer = blockManager.getDiskWriter(blockId, file, ser, fileBufferSizeBytes, writeMetricsToUse);
+
+        int currentPartition = -1;
+        for (int index = 0; index < size; index++) {
+            final int partition = longArray.getHighHalf(index * 2 + 1);
+            assert (partition >= currentPartition);
+            if (partition != currentPartition) {
+                // Switch to the new partition
+                if (currentPartition != -1) {
+                    writer.commitAndClose();
+                    spillInfo.partitionLengths[currentPartition] = writer.fileSegment().length();
+                }
+                currentPartition = partition;
+                writer =
+                        blockManager.getDiskWriter(blockId, file, ser, fileBufferSizeBytes, writeMetricsToUse);
+            }
+
+            final long recordPointer = longArray.get(index * 2);
+            final Object recordPage = memoryManager.getPage(recordPointer);
+            final long recordOffsetInPage = memoryManager.getOffsetInPage(recordPointer);
+            int dataRemaining = PlatformDependent.UNSAFE.getInt(recordPage, recordOffsetInPage);
+            long recordReadPosition = recordOffsetInPage + 4; // skip over record length
+            while (dataRemaining > 0) {
+                final int toTransfer = Math.min(DISK_WRITE_BUFFER_SIZE, dataRemaining);
+                PlatformDependent.copyMemory(
+                        recordPage,
+                        recordReadPosition,
+                        writeBuffer,
+                        PlatformDependent.BYTE_ARRAY_OFFSET,
+                        toTransfer);
+                writer.write(writeBuffer, 0, toTransfer);
+                recordReadPosition += toTransfer;
+                dataRemaining -= toTransfer;
+            }
+            writer.recordWritten();
+        }
+
+        if (writer != null) {
+            writer.commitAndClose();
+            // If `writeSortedFile()` was called from `closeAndGetSpills()` and no records were inserted,
+            // then the file might be empty. Note that it might be better to avoid calling
+            // writeSortedFile() in that case.
+            if (currentPartition != -1) {
+                spillInfo.partitionLengths[currentPartition] = writer.fileSegment().length();
+                spills.add(spillInfo);
+            }
+        }
+
+        if (!isLastFile) {  // i.e. this is a spill file
+            // The current semantics of `shuffleRecordsWritten` seem to be that it's updated when records
+            // are written to disk, not when they enter the shuffle sorting code. DiskBlockObjectWriter
+            // relies on its `recordWritten()` method being called in order to trigger periodic updates to
+            // `shuffleBytesWritten`. If we were to remove the `recordWritten()` call and increment that
+            // counter at a higher-level, then the in-progress metrics for records written and bytes
+            // written would get out of sync.
+            //
+            // When writing the last file, we pass `writeMetrics` directly to the DiskBlockObjectWriter;
+            // in all other cases, we pass in a dummy write metrics to capture metrics, then copy those
+            // metrics to the true write metrics here. The reason for performing this copying is so that
+            // we can avoid reporting spilled bytes as shuffle write bytes.
+            //
+            // Note that we intentionally ignore the value of `writeMetricsToUse.shuffleWriteTime()`.
+            // Consistent with ExternalSorter, we do not count this IO towards shuffle write time.
+            // This means that this IO time is not accounted for anywhere; SPARK-3577 will fix this.
+            writeMetrics.incShuffleRecordsWritten(writeMetricsToUse.shuffleRecordsWritten());
+            taskContext.taskMetrics().incDiskBytesSpilled(writeMetricsToUse.shuffleBytesWritten());
+        }
+    }
+
+    /**
+     * Sort and spill the current records in response to memory pressure.
+     */
+    @VisibleForTesting
+    void spill() throws IOException {
+        logger.info("Thread {} spilling sort data of {} to disk ({} {} so far)",
+                Thread.currentThread().getId(),
+                Utils.bytesToString(getTotalMemoryConsumption()),
+                spills.size(),
+                spills.size() > 1 ? " times" : " time");
+
+        writeSortedFile(false);
+        final long metaMemoryUsage = getMetaMemoryConsumption();
+        freeMeta();
+        shuffleMemoryManager.release(metaMemoryUsage);
+        final long spillSize = freePages();
+        taskContext.taskMetrics().incMemoryBytesSpilled(spillSize);
+
+        initializeForWriting();
+    }
+
+    /**
+     * Force all memory and spill files to be deleted; called by shuffle error-handling code.
+     */
+    public void cleanupAfterError() {
+        freePages();
+        for (SpillInfo spill : spills) {
+            if (spill.file.exists() && !spill.file.delete()) {
+                logger.error("Unable to delete spill file {}", spill.file.getPath());
+            }
+        }
+        if (longArray != null) {
+            shuffleMemoryManager.release(getMetaMemoryConsumption());
+            freeMeta();
         }
     }
 }
