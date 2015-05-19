@@ -25,7 +25,7 @@ final class PageRankSortDataFormat extends SortDataFormat<PageRankPointer, LongA
 
     @Override
     public PageRankPointer getKey(LongArray data, int pos, PageRankPointer reuse) {
-        reuse.key = data.get(pos * 2);
+        reuse.pointer = data.get(pos * 2);
         reuse.packedCodes = data.get(pos * 2 + 1);
         reuse.partitionId = data.getHighHalf(pos *2 + 1);
         reuse.hashcode = data.getLowHalf(pos *2 + 1);

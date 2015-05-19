@@ -368,27 +368,22 @@ public final class PageRankMap {
          * <p>
          * Unspecified behavior if the key is not defined.
          */
-        public void putNewKey(
+        private void putNewKey(
                 Object keyBaseObject,
                 long keyBaseOffset,
                 Object valueBaseObject,
-                long valueBaseOffset) {
+                long valueBaseOffset) throws IOException {
             assert (!isDefined) : "Can only set value once for a key";
             isDefined = true;
             // Here, we'll copy the data into our data pages. Because we only store a relative offset from
             // the key address instead of storing the absolute address of the value, the key and value
             // must be stored in the same memory page.
             // (8 byte key length) (key) (8 byte value length) (value)
-            final long requiredSize = KV_LENGTH_BYTES + KV_LENGTH_BYTES;
-            size++;
-            bitset.set(pos);
+            final int requiredSize = KV_LENGTH_BYTES + KV_LENGTH_BYTES;
 
             // If there's not enough space in the current page, allocate a new page:
-            if (currentDataPage == null || PAGE_SIZE_BYTES - pageCursor < requiredSize) {
-                MemoryBlock newPage = memoryManager.allocatePage(PAGE_SIZE_BYTES);
-                dataPages.add(newPage);
-                pageCursor = 0;
-                currentDataPage = newPage;
+            if (!haveSpaceForRecord(requiredSize)) {
+                allocateSpaceForRecord(requiredSize);
             }
 
             // Compute all of our offsets up-front:
@@ -413,15 +408,71 @@ public final class PageRankMap {
             longArray.setHighHalf(pos * 2 + 1, Utils.nonNegativeMod(keyHashcode, numPartitions));
             updateAddressesAndSizes(storedKeyAddress);
             isDefined = true;
-            if (size > growthThreshold) {
-                growAndRehash();
-            }
+
+            size++;
+            bitset.set(pos);
         }
 
         public void putNewKey(
                 Object kvBaseObject,
-                long kvBaseOffset) {
+                long kvBaseOffset) throws IOException {
             putNewKey(kvBaseObject, kvBaseOffset, kvBaseObject, kvBaseOffset + KV_LENGTH_BYTES);
+        }
+
+        private boolean haveSpaceForRecord(int requiredSpace) {
+            assert (requiredSpace > 0);
+            return (size > growthThreshold && (requiredSpace <= freeSpaceInCurrentPage()));
+        }
+    }
+
+    private long freeSpaceInCurrentPage() {
+        if (currentDataPage == null) {
+            return 0l;
+        } else {
+            return PAGE_SIZE_BYTES - pageCursor;
+        }
+    }
+
+    private void allocateSpaceForRecord(int requiredSpace) throws IOException {
+        if (!(size > growthThreshold)) {
+            logger.debug("Attempting to expand sort pointer array");
+            final long oldMetaMemoryUsage = getMetaMemoryConsumption();
+            final long memoryToGrowMeta = oldMetaMemoryUsage * 2;
+            final long memoryAcquired = shuffleMemoryManager.tryToAcquire(memoryToGrowMeta);
+            if (memoryAcquired < memoryToGrowMeta) {
+                shuffleMemoryManager.release(memoryAcquired);
+                spill();
+            } else {
+                growAndRehash();
+                shuffleMemoryManager.release(oldMetaMemoryUsage);
+            }
+        }
+        if (requiredSpace > freeSpaceInCurrentPage()) {
+            logger.trace("Required space {} is less than free space in current page ({})", requiredSpace,
+                    freeSpaceInCurrentPage());
+            // TODO: we should track metrics on the amount of space wasted when we roll over to a new page
+            // without using the free space at the end of the current page. We should also do this for
+            // BytesToBytesMap.
+            if (requiredSpace > PAGE_SIZE_BYTES) {
+                throw new IOException("Required space " + requiredSpace + " is greater than page size (" +
+                        PAGE_SIZE_BYTES + ")");
+            } else {
+                final long memoryAcquired = shuffleMemoryManager.tryToAcquire(PAGE_SIZE_BYTES);
+                if (memoryAcquired < PAGE_SIZE_BYTES) {
+                    shuffleMemoryManager.release(memoryAcquired);
+                    spill();
+                    final long memoryAcquiredAfterSpilling = shuffleMemoryManager.tryToAcquire(PAGE_SIZE_BYTES);
+                    if (memoryAcquiredAfterSpilling != PAGE_SIZE_BYTES) {
+                        shuffleMemoryManager.release(memoryAcquiredAfterSpilling);
+                        throw new IOException("Unable to acquire " + PAGE_SIZE_BYTES + " bytes of memory");
+                    }
+                }
+
+                MemoryBlock newPage = memoryManager.allocatePage(PAGE_SIZE_BYTES);
+                dataPages.add(newPage);
+                pageCursor = 0;
+                currentDataPage = newPage;
+            }
         }
     }
 
@@ -610,6 +661,7 @@ public final class PageRankMap {
             throw new IOException("Could not acquire " + memoryRequested + " bytes of memory");
         }
         allocate(initialSize);
+        size = 0;
 
         this.sorter = new Sorter<PageRankPointer, LongArray>(PageRankSortDataFormat.INSTANCE);
     }
@@ -723,11 +775,11 @@ public final class PageRankMap {
                         writeBuffer,
                         PlatformDependent.BYTE_ARRAY_OFFSET,
                         toTransfer);
-                writer.write(writeBuffer, 0, toTransfer);
+                // FIXME writer.write(writeBuffer, 0, toTransfer);
                 recordReadPosition += toTransfer;
                 dataRemaining -= toTransfer;
             }
-            writer.recordWritten();
+            // FIXME writer.recordWritten();
         }
 
         if (writer != null) {
