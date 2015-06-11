@@ -184,6 +184,11 @@
       <scope>system</scope>
       <systemPath>${project.basedir}/libs/soot-trunk.jar</systemPath>
     </dependency>
+    <dependency>
+      <groupId>org.scalanlp</groupId>
+      <artifactId>breeze_2.10</artifactId> <!-- or 2.11 -->
+      <version>0.10</version>
+    </dependency>
   </dependencies>
 
   <build>
