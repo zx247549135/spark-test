@@ -14,7 +14,7 @@ private[spark] class FlintTask[T, U](
     taskBinary: Broadcast[Array[Byte]],
     partition: Partition,
     @transient private var locs: Seq[TaskLocation])
-  extends Task[T](stageId, partition.index) with Logging {
+  extends Task[U](stageId, partition.index) with Logging {
 
   /** A constructor used only in test suites. This does not require passing in an RDD. */
   def this(partitionId: Int) {

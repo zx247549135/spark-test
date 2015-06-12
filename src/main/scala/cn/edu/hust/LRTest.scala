@@ -7,6 +7,8 @@ package cn.edu.hust
 import java.util.Random
 import java.io.{DataOutputStream, ByteArrayOutputStream}
 
+import org.apache.spark.rdd.RDD
+
 import scala.math.exp
 
 import breeze.linalg.{Vector, DenseVector}
@@ -17,7 +19,7 @@ import org.apache.hadoop.io.WritableComparator
  * Created by · on 2015/6/11.
  */
 object LRTest {
-  val N = 1000  // Number of data points
+  val N = 300000  // Number of data points
   val D = 100   // Numer of dimensions
   val R = 0.7  // Scaling factor
   val ITERATIONS = 5
@@ -64,6 +66,7 @@ object LRTest {
         i = 0
         while (i < dimensions) {
           result(i) = result(i) + current(i) * multiplier
+          i += 1
         }
       }
 
@@ -72,14 +75,22 @@ object LRTest {
 
   }
 
-  def main(args: Array[String]) {
+  def run(data: RDD[DataPoint]): Unit = {
+    data.cache().count()
+    val startTime = System.currentTimeMillis
+    for (i <- 1 to ITERATIONS) {
+      println("On iteration " + i)
+      val gradient = data.map { p =>
+        p.x * (1 / (1 + exp(-p.y * (w.dot(p.x)))) - 1) * p.y
+      }.reduce(_ + _)
+      w -= gradient
+    }
+    val duration = System.currentTimeMillis - startTime
+    println("Duration is " + duration / 1000.0 + " seconds")
+  }
 
-    val sparkConf = new SparkConf().setAppName("SparkLR").setMaster("local")
-    val sc = new SparkContext(sparkConf)
-    val numSlices = if (args.length > 0) args(0).toInt else 2
-    val points = sc.parallelize(generateData(N), numSlices)
-
-    val cachedPoints = points.mapPartitions { iter =>
+  def runWithFlint(data: RDD[DataPoint]): Unit = {
+    val cachedPoints = data.mapPartitions { iter =>
       val chunk = new VectorChunk(D)
       val dos = new DataOutputStream(chunk)
       for (point <- iter) {
@@ -88,6 +99,7 @@ object LRTest {
       }
       Iterator(chunk)
     }.cache()
+    cachedPoints.count()
 
     val w_op = new Array[Double](D)
     for (i <- 0 to D-1) {
@@ -111,7 +123,16 @@ object LRTest {
     }
     val duration = System.currentTimeMillis - startTime
     println("Duration is " + duration / 1000.0 + " seconds")
+  }
 
+  def main(args: Array[String]) {
+
+    val sparkConf = new SparkConf().setAppName("SparkLR").setMaster("local")
+    val sc = new SparkContext(sparkConf)
+    val numSlices = if (args.length > 0) args(0).toInt else 4
+    val points = sc.parallelize(generateData(N), numSlices)
+
+    runWithFlint(points)
 
     sc.stop()
   }
