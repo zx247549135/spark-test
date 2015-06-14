@@ -47,7 +47,6 @@ object LRTest {
 
     def getVectorValueIterator(w: Array[Double]) = new Iterator[Array[Double]] {
       var offset = 0
-      var currentPoint = new Array[Double](dimensions)
       var i = 0
       var y = 0.0
       var dotvalue = 0.0
@@ -57,6 +56,7 @@ object LRTest {
       override def next() = {
         if (!hasNext) Iterator.empty.next()
         else {
+          val currentPoint = new Array[Double](dimensions)
           //read data from the chunk
           i = 0
           while (i < dimensions) {
@@ -77,10 +77,17 @@ object LRTest {
           val factor = (1 / (1 + exp(-y * dotvalue)) - 1)
           i = 0
           while (i < dimensions) {
-            currentPoint(i) *= factor * y
+            currentPoint(i) *= factor
             i += 1
           }
-          currentPoint.clone()
+
+          val result = currentPoint.clone()
+          i = 0
+          while (i < dimensions) {
+            result(i) *= y
+            i += 1
+          }
+          result
         }
       }
     }
